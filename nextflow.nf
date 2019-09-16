@@ -258,42 +258,47 @@ process build_centrifuge_index {
 
 }
 
+if (params.centrifuge_db != null) {
+	Channel
+		.fromPath(params.centrifuge_db + '.*.cf', type: 'file')
+		.ifEmpty { error "Please specify the centrifuge index. Basename up to .1.cf should be included." }
+		.collect()
+		.set { centrifuge_index }
+	
+}
 
 
-/*
 //Centrifuge!
 //The awk filters by read coverage. $6 is hit length and $7 is query length
+//Can't get centrifuge to throw error when piping to awk if the reference is bad
 process centrifuge {
 	conda 'bioconda::centrifuge'
-	memory '100 GB'
+	memory '200 GB'
 	cpus 32
+	publishDir params.outdir
 
 	input:
 	set val(filename), val(adapter), stdin from high_complexity
+	file centrifuge_index
 	
-	if params.centrifuge_db == null {
-	file('*.cf') from centrifuge_index
-	}
-	else {
-	file(params.centrifuge_index)
-	}
-
-
 	output:
-	set val(filename), val(adapter), file('centrifuge.class') into centrifuge_results		
+	set val(filename), val(adapter), stdout into centrifuge_results	
 
+	script:
+	index_base = centrifuge_index[0].toString() - ~/.\d.cfl?/
+	
 	"""
-	centrifuge -p 32 -U - -k 1 --min-hitlen 16 --host-taxids 9606 -x $reference | awk -F "\t" 'BEGIN {OFS = FS} NR==1{print} NR>1{if(($6/$7>0.9)&&($6>0)) print}' > centrifuge.class
+	centrifuge -p 32 -U - -k 1 --min-hitlen 16 --host-taxids 9606 -x $index_base
 	"""
 
 
 }
-*/
 
-/*
+//awk -F "\t" 'BEGIN {OFS = FS} NR==1{print} NR>1{if(($6/$7>0.9)&&($6>0)) print}' > centrifuge.class
+
 //Recentrifuge for visualization, subtracting controls
 process recentrifuge_getdb {
-	conda 'bioconda::recentrifuge'
+	conda '/home/schorlton/.conda/envs/recentrifuge/' //Would need to upload this package
 	cpus 1
 
 	output:
@@ -305,8 +310,8 @@ process recentrifuge_getdb {
 	retaxdump
 	"""
 }
-
-//I suppose could also use Krona but can filter with recentrifuge
+/*
+//I suppose could also use Krona but can filter contaminantswith recentrifuge
 process recentrifuge {
 	conda 'bioconda::recentrifuge'
 	cpus 8
@@ -317,27 +322,52 @@ process recentrifuge {
 	output:
 
 	"""
-	rcf -f $input -x 9606 -e TSV -s NORMA
+	rcf --format "TYP:CSV, TID:3, LEN:7, SCO:9, UNC:0" -c 1 -g filtered30.csv -g unfiltered.csv -x 9606 -s GENERIC -e TSV
 	"""
 
 }
 
-//Extract reads of species detected for coverage calculation
 
-//Assemble species with high coverage
 
+//Filter human reads and contamination from the first centrifuge results, calculate assembly size, assemble, then run centrifuge on assemblies and match up assemblies with centrifuge results. Assemblies will be needed for later steps.
+
+process metagenomic_assembly {
+	conda 'bioconda::flye'
+	cpus 32
+	memory '300 GB'
+
+	output:
+
+	"""
+	flye --meta --plasmid --nano-raw $input --genome-size $metagenome_size -o flye_out --threads 32
+	"""
+
+
+
+}
+
+
+//Assess assembly size with metaquast
 
 //AMR
 
 //Species specific pipelines
-//TB resistance
-//Toxin detection
-//MLST
 
 process mlst {
 	conda '/conda_configs/mlst.yaml'
 	cpus 1
+
+
+}
 	
+//TB resistance
+//Toxin detection: diphtheria, other corynes for diphtheria toxin, Clostridium botulinum for botulinum toxin, Vibrio
+//MLST and cg/wgMLST if possible
+//B cereus vs anthracis
+//Salmonella serotyping: SISTR
+//H flu serotyping: hicap
+//E coli serotyping
+//Strep pneumo serotyping
 
 
 
