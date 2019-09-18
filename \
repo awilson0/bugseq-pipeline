@@ -107,7 +107,7 @@ list_fastq
 	.toSortedList()
 	.subscribe { println it }
 
-
+//control_count = 0
 
 if ( params.control_fastq ) {
 Channel
@@ -116,8 +116,9 @@ Channel
 	.map { tuple(it,it,"control") }
 	.set { control_fastqs }
 
-control_count=count_fastq_control
+count_fastq_control
 	.count()
+	.tap { control_count }
 	.subscribe { println "$it control file(s) detected:" }
 
 list_fastq_control
@@ -310,26 +311,21 @@ process centrifuge {
 	file centrifuge_index
 	
 	output:
-	set val(filename), val(adapter), val(case_control), stdout into centrifuge_results
+	set val(filename), val(adapter), val(case_control), stdout into centrifuge_results	
 
 	script:
 	index_base = centrifuge_index[0].toString() - ~/.\d.cfl?/
 	
 	"""
 	centrifuge -p 32 -U - -k 1 --min-hitlen 16 --host-taxids 9606 -x $index_base
-
 	"""
 
 
 }
 
-//Calculate read coverage and create a channel without human reads for assembly
+//Calculate read coverage
 //The awk filters by read coverage. $6 is hit length and $7 is query length
 //Can't get centrifuge to throw error when piping to awk if the reference is bad
-//32630 is contaminant taxid in centrifuge as per https://github.com/DaehwanKimLab/centrifuge/blob/6cc874e890249f6d8b479bd41b41e131f12c6796/centrifuge-download#L259
-
-//at some point it would also be nice to remove contamination pre-assembly based on recentrifuge results
-
 process calculate_readCov {
 	cpus 1
 	memory '1 GB'
@@ -338,13 +334,12 @@ process calculate_readCov {
 	set val(filename), val(adapter), val(case_control), stdin from centrifuge_results
 
 	output:
-	set val(filename), val(adapter), val(case_control), file('*.class') into centrifuge_results_withCov
-	set val(filename), val(adapter), val(case_control), file('nohuman.txt') into no_human_class
+	set val(filename), val(adapter), val(case_control), file('centrifuge.class') into centrifuge_results_withCov
+
 	
-	"""
- 	awk -F"\t" '{(NR > 1) ? \$(NF+1)=\$6/\$7*100 : \$(NF+1)="readCov"}1' OFS="\t" > ${filename.baseName}_${adapter}.class
-	awk -F"\t" '(NR==1){print}; (NR>1 && \$9>40 && \$3!=9606 && \$3!=32630){print}' ${filename.baseName}_${adapter}.class > nohuman.txt
-	"""
+	'''
+ 	awk -F"\t" '{(NR > 1) ? $(NF+1)=$6/$7*100 : $(NF+1)="readCov"}1' OFS="\t" > centrifuge.class
+	'''
 
 }
 
@@ -355,7 +350,7 @@ process recentrifuge_getdb {
 	cpus 1
 
 	output:
-	file('taxdump/') into recentrifuge_db
+	file('*') into recentrifuge_db
 
 
 	
@@ -364,116 +359,32 @@ process recentrifuge_getdb {
 	"""
 }
 
-//I suppose could also use Krona but can filter contaminants with recentrifuge
-
-
-cases_centrifuge = Channel.create()
-controls_centrifuge = Channel.create()
-
-centrifuge_results_withCov
-	.choice(cases_centrifuge,controls_centrifuge) {
-	centrifuge_results_withCov -> centrifuge_results_withCov[2] == "case" ? 0 : 1
-	}
-
-cases_centrifuge
-	.into { cases_centrifuge_files ; cases_centrifuge_command }
-
-controls_centrifuge
-	.into { controls_centrifuge_files; controls_centrifuge_command }
-
-
+//I suppose could also use Krona but can filter contaminantswith recentrifuge
 process recentrifuge {
 	conda '/home/schorlton/.conda/envs/recentrifuge/'
 	cpus 8
 	publishDir params.outdir	
 	echo true
 	input:
-	set val(case_filename), val(case_adapter), val(case_control_case), file("${case_filename.baseName}_${case_adapter}.class") from cases_centrifuge_files.collect()
-	val case_cmd from cases_centrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
+	//set val(filename), val(adapter), val(case_control), file(input) from centrifuge_results_withCov.collect()
+	 val cmd from centrifuge_results_withCov.collect{[' -g ', it[3]].flatten()}
 	
-	set val(control_filename), val(control_adapter), val(control_case_control), file("${control_filename.baseName}_${control_adapter}.class") from controls_centrifuge_files.collect()
-	val control_cmd from controls_centrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
-	
-	val control_count	
-
 	file('*') from recentrifuge_db
 	
 
 	output:
-	file('*')
-	
-	script:	
-	
-	if (control_count>0){	
-	"""	
-	rcf --format "TYP:TSV, TID:3, LEN:7, SCO:9, UNC:0" -x 9606 -s GENERIC -e TSV -y 40 -c $control_count${control_cmd.join()}${case_cmd.join()}
-	"""
-	}
-	else {
-	"""
-	rcf --format "TYP:TSV, TID:3, LEN:7, SCO:9, UNC:0" -x 9606 -s GENERIC -e TSV -y 40${case_cmd.join()}
-	"""
-}
-}
-
-
-process get_genomes_sizes {
-	cpus 1
-	memory '500 MB'
-	
-	output:
-	file('species_genome_size.txt') into ncbi_genome_size
-
-	script:
-
-	"""
-	wget -c ftp://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/species_genome_size.txt.gz -O - | gunzip > species_genome_size.txt
-	"""
-}
-
-
-process estimage_metagenome_size {
-	echo true
-	
-	input:
-	file ncbi_genome_size
-	set val(filename), val(adapter), val(case_control), file(classification) from no_human_class
-	output:
-	
-	val(filename), val(adapter), val(case_control), file(classification), val(stdout) into metagenome_size
+	//file('*')
 	
 	script:
-
+	
 	"""
-	cut -f3 -d'	' $classification | tail -n +2 | sort -u > mytaxids.txt
-	awk 'NR == FNR{a[\$1] = \$4;next}; {sum+=a[\$1]} END {print sum}' $ncbi_genome_size mytaxids.txt
+	echo ${cmd.join()}
+	
+	#rcf --format "TYP:TSV, TID:3, LEN:7, SCO:9, UNC:0" -x 9606 -s GENERIC -e TSV -y 40
 	"""
 
 }
-/*
-process extract_foreground_reads {
 
-	conda 'bioconda::seqtk'
-	cpus 1
-	memory '1 GB'
-
-
-	input:	
-	val(filename), val(adapter), val(case_control), file(classification), val(size) from metagenome_size
-	output:
-	val(filename), val(adapter), val(case_control), file(classification), val(size), file('to_assemble.fastq') into to_assemble
-
-	script:
-	seq
-
-
-
-
-
-
-
-}
-*/
 /*
 
 //Filter human reads and contamination from the recentrifuge results, calculate assembly size, assemble, then run centrifuge on assemblies and match up assemblies with centrifuge results. Assemblies will be needed for later steps.
