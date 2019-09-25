@@ -164,43 +164,6 @@ process recentrifuge_getdb {
 }
 
 
-//Get resistance database. CARD database could be an issue with licensing but let's run with it for now.
-
-process get_card {
-
-	cpus 1
-	memory '1 GB'
-
-	output:
-	file('nucleotide_fasta_protein_homolog_model.fasta') into card_fasta
-
-	"""
-	wget https://card.mcmaster.ca/latest/data -O - | tar -xj
-	"""
-}
-
-
-toxin_fasta = Channel.fromPath(workflow.projectDir + '/refs/toxins.fasta')
-
-// Build minimap2 resistance and toxin database
-process build_resistance_db {
-	conda 'bioconda::minimap2'
-	cpus 8
-	memory '16 GB'
-	
-	input:
-	file card_fasta
-	file toxin_fasta
-	output:
-	file('nuc_prot_homolog.mmi') into resistance_db
-	file('toxins.mmi') into toxin_db
-	script:
-	"""
-	minimap2 -t 8 -x map-ont -d nuc_prot_homolog.mmi $card_fasta
-	minimap2 -t 8 -x map-ont -d toxins.mmi $toxin_fasta
-	"""
-
-}
 
 // OK Let's actually start processing some files now
 
@@ -344,7 +307,7 @@ process filter_low_complexity {
 	set val(filename), file(input), val(case_control) from chopped
 
 	output:
-	set val(filename), val(input.baseName), val(case_control), file('out.fastq') into high_complexity, high_complexity_AST
+	set val(filename), val(input.baseName), val(case_control), file('out.fastq') into high_complexity
 	set val(filename), file('out.fastq') into high_complexity2
 
 	"""
@@ -514,7 +477,7 @@ process metagenomic_assembly {
 	cpus 32
 	memory { fastq.size() < 1.GB ? 100.GB : 300.GB }
 	
-	//publishDir params.outdir
+	publishDir params.outdir
 	//echo true
 	errorStrategy { task.attempt < 4 ? 'retry' : 'ignore' }
 	maxRetries 3
@@ -522,7 +485,7 @@ process metagenomic_assembly {
 	set val(case_filename), val(case_adapter), file(fastq), val(size) from to_assemble
 
 	output:
-	set val(case_filename), val(case_adapter), file('flye_out/assembly.fasta') into metagenomes
+	set val(case_filename), val(case_adapter), file('flye_out/assembly.fasta') into metagenomes_quast, metagenomes2, metagenomes_amr
 	
 	script:
 	mysize=size.trim().toInteger()/task.attempt
@@ -543,9 +506,9 @@ process metaquast {
 	memory '8 GB'
 
 	input:
-	set val(filename), val(adapter), file("${filename.baseName}_${adapter}.fasta") from metagenomes
+	set val(filename), val(adapter), file("${filename.baseName}_${adapter}.fasta") from metagenomes_quast
 	output:
-	file('quast_results/latest/report.tsv') into metagenomes_quast
+	file('quast_results/latest/report.tsv') into metagenomes_quast_results
 	script:
 	"""
 	metaquast --max-ref-number 0 --threads 8 ${filename.baseName}_${adapter}.fasta
@@ -555,44 +518,168 @@ process metaquast {
 }
 
 
-
-//Map for AMR and toxins
-// Filter anbiotic resistance gene calls by depth and breadth of coverage
-process map_ast {
-	conda 'bioconda::minimap2 bioconda::samtools'
-	cpus 16
-	memory '8 GB'
+//Centrifuge the metagenomic assembly (could probably combine this with the previous centrifuge process
+//Still need to incorporate nextflow generated db if none specified
+process metagenome_centrifuge {
+	conda 'bioconda::centrifuge'
+	memory '200 GB'
+	cpus 32
 	publishDir params.outdir
 
 	input:
-	 set val(filename), val(input.baseName), val(case_control), file(reads) from high_complexity_AST
-	file resistance_db
-	file toxin_db
-	output:
-	file('*')
+	set val(filename), val(adapter), file(input) from metagenomes2
+	file centrifuge_index
 	
+	output:
+	set val(filename), val(adapter), stdout into centrifuge_metagenome_results
+
 	script:
-
+	index_base = centrifuge_index[0].toString() - ~/.\d.cfl?/
+	
 	"""
-	minimap2 --sam-hit-only --secondary=no -t 14 -a $resistance_db $reads | samtools sort --threads 2 > amr.bam
-	samtools depth -a amr.bam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_amr.txt
-
-	minimap2 --sam-hit-only --secondary=no -t 14 -a $toxin_db $reads | samtools sort --threads 2 > toxin.bam
-	samtools depth -a toxin.bam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_toxins.txt
-
+	centrifuge -p 32 -f -U $input -k 1 -x $index_base
 
 	"""
 
 
 }
 
+//Calculate contig coverage
+//The awk filters by read coverage. $6 is hit length and $7 is query length
+//Can't get centrifuge to throw error when piping to awk if the reference is bad
+//32630 is contaminant taxid in centrifuge as per https://github.com/DaehwanKimLab/centrifuge/blob/6cc874e890249f6d8b479bd41b41e131f12c6796/centrifuge-download#L259
 
+//at some point it would also be nice to remove contamination pre-assembly based on recentrifuge results
 
+process calculate_metagenomeCov {
+	cpus 1
+	memory '1 GB'
+	publishDir params.outdir
+	input:
+	set val(filename), val(adapter), stdin from centrifuge_metagenome_results
 
+	output:
+	set val(filename), val(adapter), file('*.class') into centrifuge_metagenome_withCov
+		
+	
+	"""
+ 	awk -F"\t" '{(NR > 1) ? \$(NF+1)=\$6/\$7*100 : \$(NF+1)="readCov"}1' OFS="\t" > ${filename.baseName}_${adapter}_meta.class
+
+	"""
+
+}
+
+//alternatives include abricate and rgi. Phenotype info in RGI not great. next step: combine species info for SNP detection
+process search_assembly_amr {
+	conda 'bioconda::staramr'
+	cpus 32
+	publishDir params.outdir
+	input:
+	set val(case_filename), val(case_adapter), file(assembly) from metagenomes_amr
+
+	output:
+	set val(case_filename), val(case_adapter), file('resfinder.txt') into staramar
+	script:
+
+	"""
+	staramr search $assembly --pid-threshold 90 --percent-length-overlap-resfinder 90 --nprocs 32 --output-summary /dev/null --output-resfinder resfinder.txt
+	"""	
+
+}
 
 
 
 /*
+
+//Get resistance database.
+
+process get_resfinder {
+
+	cpus 1
+	memory '1 GB'
+	conda 'git bioconda::seqkit'
+
+	output:
+	file('resfinder.fasta') into resistance_fasta
+
+	"""
+	git clone https://git@bitbucket.org/genomicepidemiology/resfinder_db.git
+	cat resfinder_db/*.fsa | seqkit rmdup > resfinder.fasta
+	"""
+}
+
+
+toxin_fasta = Channel.fromPath(workflow.projectDir + '/refs/toxins.fasta')
+
+// Build minimap2 resistance and toxin database
+process build_resistance_db {
+	conda 'bioconda::minimap2'
+	cpus 8
+	memory '16 GB'
+	
+	input:
+	file resistance_fasta
+	file toxin_fasta
+	output:
+	file('resfinder.mmi') into resistance_db
+	file('toxins.mmi') into toxin_db
+	script:
+	"""
+	minimap2 -t 8 -x map-ont -d resfinder.mmi $resistance_fasta
+	minimap2 -t 8 -x map-ont -d toxins.mmi $toxin_fasta
+	"""
+
+}
+//Map for AMR...one day? There's problems with specificity
+// Filter anbiotic resistance gene calls by depth and breadth of coverage
+process map_ast {
+	conda 'bioconda::minimap2 bioconda::samtools'
+	cpus 16
+	memory '8 GB'
+	publishDir params.outdir
+	echo true
+	input:
+	 set val(filename), val(input.baseName), val(case_control), file(reads) from high_complexity_AST
+	file resistance_db
+
+
+	output:
+	//set val(filename), val(input.baseName), val(case_control), file('found_amr.txt') into amr_genepresence
+	
+	script:
+
+	"""
+	minimap2 --sam-hit-only --cs --secondary=no -t 14 -a $resistance_db $reads | samtools sort -O sam --threads 2 > amr.sam
+	paftools.js sam2paf amr.sam | awk -F"\t" '((\$10/\$11*100)>85){print \$1}' OFS="\t" > read_ids.txt
+	
+	grep ^@ amr.sam > amr_subset.sam
+	LC_ALL=C grep -w -F -f read_ids.txt  < amr.sam >> amr_subset.sam
+	
+	
+	samtools depth -a amr_subset.sam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_amr.txt
+	
+"""
+
+}
+
+//Map for toxins
+
+process toxins {
+
+
+	minimap2 --sam-hit-only --secondary=no --cs -t 14 -a $toxin_db $reads | samtools sort -O sam --threads 2 > toxins.sam
+	paftools.js sam2paf toxins.sam | awk -F"\t" '((\$10/\$11*100)>85){print \$1}' OFS="\t" > toxin_ids.txt
+	grep ^@ toxins.sam > toxin_subset.sam
+	LC_ALL=C grep -w -F -f toxin_ids.txt  < toxins.sam >> toxin_subset.sam
+
+	samtools depth -a toxin_subset.sam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_toxin.txt
+	
+
+
+}
+
+
+
 
 //Species specific pipelines
 
@@ -627,7 +714,7 @@ publishDir params.outdir + '/QC/'
 
 input:
 file '*_fastqc.zip' from fastqc.collect()
-file '*' from metagenomes_quast.collect()
+file '*' from metagenomes_quast_results.collect()
 output:
 file '*.html'
 
@@ -637,6 +724,23 @@ multiqc -n "BUGSEQ_QC" *
 
 }
 
+/*
+process report {
+
+input:
+set amr_genepresence
+
+output:
+file('report.html')
+file('report.pdf')
+
+script:
+
+
+
+
+}
+*/
 workflow.onComplete {
     println """
     Pipeline execution summary
