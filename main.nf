@@ -31,7 +31,7 @@ if (params.help) {
 	System.out.println("Mandatory arguments:")
 	System.out.println("    --fastq   *.f*q      File path(s) of fastq file(s). Can be uncompressed or gzipped.")
 	System.out.println("Optional arguments:")
-	System.out.println("	---centrifuge_db [folder]	Folder containing centrifuge index for mapping")
+
     exit 1
 }
 
@@ -43,7 +43,7 @@ params.outdir = "results"
 params.mode = "complete"
 params.centrifuge_db = null
 params.control_fastq = null
-params.control_centrifuge = null
+
 
 
 
@@ -72,7 +72,7 @@ log.info """\
  mode:		${params.mode}
  centrifuge_db: ${params.centrifuge_db}
  control_fastq:	${params.control_fastq}
- control_centrifuge:	${params.control_centrifuge}
+ 
 ++++++++++++++++++++++++++++++++++++
 
  Start time: ${sysdate}
@@ -110,42 +110,14 @@ process get_genome_sizes {
 }
 
 
-//Build centrifuge index
-
-process build_centrifuge_index {
-	conda 'bioconda::centrifuge bioconda::blast'
-	memory '300 GB'
-	cpus 32
-	publishDir './Centrifuge_index'
-	echo true 
-
-	output:
-	file('*.cf') into centrifuge_index
-        
-	when:
-	params.centrifuge_db == null
-
-        
-	"""
-	centrifuge-download -P 32 -o taxonomy taxonomy
-	centrifuge-download -P 32 -o library -m -a "Any" -d "archaea,viral,fungi,protozoa" refseq > seqid2taxid.map
-	centrifuge-download -P 32 -o library -m -d "bacteria" refseq >> seqid2taxid.map
-	centrifuge-download -P 32 -o library -m -d "vertebrate_mammalian" -a "Chromosome" -t 9606 -c 'reference genome' refseq >> seqid2taxid.map
-	centrifuge-download -P 32 -o library -m contaminants >> seqid2taxid.map
-	cat library/*/*.fna > input-sequences.fna
-	centrifuge-build -p 32 --conversion-table seqid2taxid.map --taxonomy-tree taxonomy/nodes.dmp --name-table taxonomy/names.dmp input-sequences.fna refseq_microbial
-        """
-
-}
-
-if (params.centrifuge_db != null) {
-	Channel
-		.fromPath(params.centrifuge_db + '.*.cf', type: 'file')
-		.ifEmpty { error "Please specify the centrifuge index. Basename up to .1.cf should be included." }
-		.collect()
-		.set { centrifuge_index }
+//This is for the metagenomic assembly taxonomic classification
+Channel
+	.fromPath(params.centrifuge_db + '.*.cf', type: 'file')
+	.ifEmpty { error "Please specify the centrifuge index. Basename up to .1.cf should be included." }
+	.collect()
+	.set { centrifuge_index }
 	
-}
+
 
 
 //Get recentrifuge taxonomy
@@ -277,7 +249,7 @@ fastqc $fastq
 
 // Trim nanopore adapters. Porechop seems to be deprecated...still need to trim adapters without barcode? qcat currently doesn't support this.
 process demultiplex {
-	conda 'bioconda::qcat'
+	conda 'bioconda::qcat future'
 	cpus 8
 	memory '4 GB'
 	echo true
@@ -318,20 +290,23 @@ process filter_low_complexity {
 
 }
 
+//Detect experiment type here. Is it amplicon, isolate or metagenomic?
 
 
 
-//Centrifuge!
-//Still need to incorporate nextflow generated db if none specified
-process centrifuge {
-	conda 'bioconda::centrifuge'
-	memory '200 GB'
+
+//If metagenomic:
+//Taxonomic read level classification!
+
+process read_classify {
+	conda 'bioconda::minimap2'
+	memory '125 GB'
 	cpus 32
 	publishDir params.outdir
 
 	input:
 	set val(filename), val(adapter), val(case_control), file(input) from high_complexity
-	file centrifuge_index
+	file minimap2_index
 	
 	output:
 	set val(filename), val(adapter), val(case_control), stdout into centrifuge_results
@@ -340,56 +315,38 @@ process centrifuge {
 	index_base = centrifuge_index[0].toString() - ~/.\d.cfl?/
 	
 	"""
-	centrifuge -p 32 -U $input -k 1 --min-hitlen 16 --host-taxids 9606 -x $index_base
+	minimap2 -t 32 -x $index_base $input
 
 	"""
 
 
 }
 
-//Calculate read coverage and create a channel without human reads for assembly
-//The awk filters by read coverage. $6 is hit length and $7 is query length
-//Can't get centrifuge to throw error when piping to awk if the reference is bad
-//32630 is contaminant taxid in centrifuge as per https://github.com/DaehwanKimLab/centrifuge/blob/6cc874e890249f6d8b479bd41b41e131f12c6796/centrifuge-download#L259
+// Refine alignments
 
-//at some point it would also be nice to remove contamination pre-assembly based on recentrifuge results
+process refine_alignments {
+	conda 'bioconda::pathoscope'
 
-process calculate_readCov {
-	cpus 1
-	memory '1 GB'
-	publishDir params.outdir
-	input:
-	set val(filename), val(adapter), val(case_control), stdin from centrifuge_results
-
-	output:
-	set val(filename), val(adapter), val(case_control), file('*.class') into centrifuge_results_withCov
-		
-	
-	"""
- 	awk -F"\t" '{(NR > 1) ? \$(NF+1)=\$6/\$7*100 : \$(NF+1)="readCov"}1' OFS="\t" > ${filename.baseName}_${adapter}.class
-
-	"""
 
 }
-
 
 
 //I suppose could also use Krona but can filter contaminants with recentrifuge
 
 
-cases_centrifuge = Channel.create()
-controls_centrifuge = Channel.create()
+cases_recentrifuge = Channel.create()
+controls_recentrifuge = Channel.create()
 
 centrifuge_results_withCov
 	.choice(cases_centrifuge,controls_centrifuge) {
 	centrifuge_results_withCov -> centrifuge_results_withCov[2] == "case" ? 0 : 1
 	}
 
-cases_centrifuge
-	.into { cases_centrifuge_files ; cases_centrifuge_command ; cases_centrifuge_tofilter }
+cases_recentrifuge	
+	.into { cases_recentrifuge_files ; cases_recentrifuge_command ; cases_recentrifuge_tofilter }
 
-controls_centrifuge
-	.into { controls_centrifuge_files; controls_centrifuge_command }
+controls_recentrifuge
+	.into { controls_recentrifuge_files; controls_recentrifuge_command }
 
 
 
@@ -401,11 +358,11 @@ process recentrifuge {
 
 	input:
 	
-	file cases from cases_centrifuge_files.collect { it[3] }
-	val case_cmd from cases_centrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
+	file cases from cases_recentrifuge_files.collect { it[3] }
+	val case_cmd from cases_recentrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
 	
-	file controls from controls_centrifuge_files.collect { it[3] }
-	val control_cmd from controls_centrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
+	file controls from controls_recentrifuge_files.collect { it[3] }
+	val control_cmd from controls_recentrifuge_command.collect{[' -g ', it[3].baseName+'.class'].flatten()}
 	
 	val control_count	
 
@@ -431,43 +388,7 @@ process recentrifuge {
 }
 
 
-
-
-toextract = cases_centrifuge_tofilter.join(high_complexity2)
-
-
-//For now, only remove human and contaminant reads before assembly. Maybe at a later date, also remove contamination reads pre-assembly. Will be ?harder to calculate assembly size though.
-//Only require 10% read coverage for human and contaminant reads
-//Also estimate metagenome size here
-process extract_foreground_reads {
-
-	conda 'bioconda::seqtk'
-	cpus 1
-	memory '1 GB'
-	publishDir params.outdir
-
-	input:
-	file ncbi_genome_size
-	set val(case_filename), val(case_adapter), val(case_control_case), file(centrifuge_out), file(fastq_in) from toextract
-
-
-	output:
-	set val(case_filename), val(case_adapter), file('keepers.fastq'), stdout into to_assemble
-	file('*')
-	script:
-	
-	"""	
-	awk -F"\t" '(NR>3 && \$9>40 && \$3!=9606 && \$3!=32630){print \$3}' $centrifuge_out | sort -u > mytaxids.txt
-
-	awk -F"\t" '(NR>3 && !(\$9>10 && ((\$3=9606) || (\$3=32630)))){print \$1}' $centrifuge_out > toextract_reads.txt
-	seqtk subseq $fastq_in toextract_reads.txt > keepers.fastq
-
-	awk 'NR == FNR{a[\$1] = \$4;next}; {sum+=a[\$1]} END {print sum}' $ncbi_genome_size mytaxids.txt
-
-
-	"""
-
-}
+/*
 
 
 //Filter human reads and contamination from the recentrifuge results, calculate assembly size, assemble, then run centrifuge on assemblies and match up assemblies with centrifuge results. Assemblies will be needed for later steps.
@@ -475,7 +396,7 @@ process extract_foreground_reads {
 process metagenomic_assembly {
 	conda 'bioconda::flye'
 	cpus 32
-	memory { fastq.size() < 1.GB ? 100.GB : 300.GB }
+	memory { fastq.size() < 1.GB ? 100.GB : 350.GB }
 	
 	publishDir params.outdir
 	//echo true
@@ -485,7 +406,7 @@ process metagenomic_assembly {
 	set val(case_filename), val(case_adapter), file(fastq), val(size) from to_assemble
 
 	output:
-	set val(case_filename), val(case_adapter), file('flye_out/assembly.fasta') into metagenomes_quast, metagenomes2, metagenomes_amr
+	set val(case_filename), val(case_adapter), file('flye_out/assembly.fasta') into metagenomes_quast, metagenomes2, metagenomes_amr, metagenomes_toxins
 	
 	script:
 	mysize=size.trim().toInteger()/task.attempt
@@ -505,6 +426,7 @@ process metaquast {
 	cpus 8
 	memory '8 GB'
 
+	publishDir params.outdir	
 	input:
 	set val(filename), val(adapter), file("${filename.baseName}_${adapter}.fasta") from metagenomes_quast
 	output:
@@ -518,13 +440,12 @@ process metaquast {
 }
 
 
-//Centrifuge the metagenomic assembly (could probably combine this with the previous centrifuge process
-//Still need to incorporate nextflow generated db if none specified
+//Centrifuge the metagenomic assembly
 process metagenome_centrifuge {
 	conda 'bioconda::centrifuge'
 	memory '200 GB'
 	cpus 32
-	publishDir params.outdir
+	
 
 	input:
 	set val(filename), val(adapter), file(input) from metagenomes2
@@ -587,98 +508,31 @@ process search_assembly_amr {
 
 }
 
-
-
-/*
-
-//Get resistance database.
-
-process get_resfinder {
-
-	cpus 1
-	memory '1 GB'
-	conda 'git bioconda::seqkit'
-
-	output:
-	file('resfinder.fasta') into resistance_fasta
-
-	"""
-	git clone https://git@bitbucket.org/genomicepidemiology/resfinder_db.git
-	cat resfinder_db/*.fsa | seqkit rmdup > resfinder.fasta
-	"""
-}
-
+//abricate for toxins
 
 toxin_fasta = Channel.fromPath(workflow.projectDir + '/refs/toxins.fasta')
 
-// Build minimap2 resistance and toxin database
-process build_resistance_db {
-	conda 'bioconda::minimap2'
+process search_toxins {
+	conda '/conda_configs/abricate.yaml'
 	cpus 8
-	memory '16 GB'
-	
-	input:
-	file resistance_fasta
-	file toxin_fasta
-	output:
-	file('resfinder.mmi') into resistance_db
-	file('toxins.mmi') into toxin_db
-	script:
-	"""
-	minimap2 -t 8 -x map-ont -d resfinder.mmi $resistance_fasta
-	minimap2 -t 8 -x map-ont -d toxins.mmi $toxin_fasta
-	"""
-
-}
-//Map for AMR...one day? There's problems with specificity
-// Filter anbiotic resistance gene calls by depth and breadth of coverage
-process map_ast {
-	conda 'bioconda::minimap2 bioconda::samtools'
-	cpus 16
-	memory '8 GB'
+	memory '4 GB'
 	publishDir params.outdir
-	echo true
+
 	input:
-	 set val(filename), val(input.baseName), val(case_control), file(reads) from high_complexity_AST
-	file resistance_db
-
-
+	set val(case_filename), val(case_adapter), file(assembly) from metagenomes_toxins 
 	output:
-	//set val(filename), val(input.baseName), val(case_control), file('found_amr.txt') into amr_genepresence
-	
+	set val(case_filename), val(case_adapter), file('out.tab') into abricate_toxins
+
 	script:
-
 	"""
-	minimap2 --sam-hit-only --cs --secondary=no -t 14 -a $resistance_db $reads | samtools sort -O sam --threads 2 > amr.sam
-	paftools.js sam2paf amr.sam | awk -F"\t" '((\$10/\$11*100)>85){print \$1}' OFS="\t" > read_ids.txt
-	
-	grep ^@ amr.sam > amr_subset.sam
-	LC_ALL=C grep -w -F -f read_ids.txt  < amr.sam >> amr_subset.sam
-	
-	
-	samtools depth -a amr_subset.sam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_amr.txt
-	
-"""
-
-}
-
-//Map for toxins
-
-process toxins {
-
-
-	minimap2 --sam-hit-only --secondary=no --cs -t 14 -a $toxin_db $reads | samtools sort -O sam --threads 2 > toxins.sam
-	paftools.js sam2paf toxins.sam | awk -F"\t" '((\$10/\$11*100)>85){print \$1}' OFS="\t" > toxin_ids.txt
-	grep ^@ toxins.sam > toxin_subset.sam
-	LC_ALL=C grep -w -F -f toxin_ids.txt  < toxins.sam >> toxin_subset.sam
-
-	samtools depth -a toxin_subset.sam | awk -F"\t" '{seen[\$1]+=\$3; count[\$1]++; if(\$3>0)breadth[\$1]++} END{for (x in seen) if(((seen[x]/count[x])>0.8) && ((breadth[x]/count[x])>0.9))print x, seen[x]/count[x], breadth[x]/count[x]}' > found_toxin.txt
-	
+	abricate --threads 8 --mincov 90 --db toxins --datadir refs/ $assembly > out.tab
+	"""
 
 
 }
+*/
 
-
+/*
 
 
 //Species specific pipelines
@@ -698,13 +552,13 @@ process mlst {
 //H flu serotyping: hicap
 //E coli serotyping
 //Strep pneumo serotyping
-
+//resistance for strep pneumo andn gonorrheae: https://www.biorxiv.org/content/10.1101/403204v2.full
 
 
 */
 //Plot and report
 
-
+/*
 //multiqc pre preprocess
 
 process multiqc_fastqc {
@@ -724,7 +578,7 @@ multiqc -n "BUGSEQ_QC" *
 
 }
 
-/*
+
 process report {
 
 input:
