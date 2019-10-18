@@ -1,5 +1,9 @@
 # bugseq-pipeline
-A pipeline to analyze clinical microbiology nanopore sequencing data
+BugSeq automatically analyzes clinical microbiology nanopore sequencing data from start to finish. This includes taxonomic classification of reads, antimicrobial resistance prediction and detailed subtyping for public health purposes.
+
+## Rationale
+Modern clinical microbiology techniques take a day to grow and identify an organism, and another day to determine antimicrobial susceptibilities. Yet, clinical trials show that patients with septic shock have a ~7% increase in mortality for every hour delay in appropriate antimicrobial therapy. Furthermore, patients with rare or novel infections may never have the etiology of their illness diagnosed. Metagenomic nanopore sequencing has the potential to drastically speed up the diagnosis and characterization of infections, enabling better patient outcomes. Recovering pathogen genomes provides a vast amount of clinically useful information, such as whether a patient's *E. coli* is susceptible to ceftriaxone, whether a patient's *V. cholerae* is toxigenic, or whether the *M. tuberculosis* between two patients are likely to be epidemiologically linked.
+
 
 ## Quick start
 ```
@@ -50,16 +54,16 @@ options:
 2. BugSeq validates the fastq file (fqtools) and determines if it's truly nanopore data
 3. Next, the fastq undergoes quality assessment with FastQC and results combined with multiqc
 4. Reads are adapter trimmed and demultiplexed (poretools)
-5. Trimmed and demultiplexed reads undergo experiment type detection to determine if this is amplicon data (eg. 16S/ITS), cultured isolate data or metagenomic data.
+5. Trimmed and demultiplexed reads undergo experiment type detection to determine if this is amplicon data (eg. 16S/ITS), cultured isolate data or metagenomic data (magic..., including sourmash)
 
 ### Isolate data
-1. Genome assembly (flye)
-2. Taxonomic classification of assembly
+1. Genome assembly (Flye)
+2. Taxonomic classification of assembly (minimap2 + Pathoscope ID)
 
 ### Metagenomic data
 1. Read-level taxonomic classification to species level
 2. Correction for control samples to identify significant pathogens in the cases only
-3. Metagenome assembly
+3. Metagenome assembly (metaFlye)
 4. Taxonomic binning of species within metagenome
 
 ### Pathogen specific analyses
