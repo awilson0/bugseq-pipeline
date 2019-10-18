@@ -2,7 +2,7 @@
 BugSeq automatically analyzes clinical microbiology nanopore sequencing data from start to finish. This includes taxonomic classification of reads, antimicrobial resistance prediction and detailed subtyping for public health purposes.
 
 ## Rationale
-Modern clinical microbiology techniques take a day to grow and identify an organism, and another day to determine antimicrobial susceptibilities. Yet, clinical trials show that patients with septic shock have a ~7% increase in mortality for every hour delay in appropriate antimicrobial therapy. Furthermore, patients with rare or novel infections may never have the etiology of their illness diagnosed. Metagenomic nanopore sequencing has the potential to drastically speed up the diagnosis and characterization of infections, enabling better patient outcomes. Recovering pathogen genomes provides a vast amount of clinically useful information, such as whether a patient's *E. coli* is susceptible to ceftriaxone, whether a patient's *V. cholerae* is toxigenic, or whether the *M. tuberculosis* between two patients are likely to be epidemiologically linked.
+Modern clinical microbiology techniques take a day to grow and identify an organism, and another day to determine antimicrobial susceptibilities. Yet, clinical trials show that patients with septic shock have a ~7% increase in mortality for every hour delay in appropriate antimicrobial therapy. Furthermore, patients with rare or novel infections may never have the etiology of their illness diagnosed as traditional techniques can not pick up their identify their infection. Metagenomic nanopore sequencing has the potential to drastically speed up the diagnosis and characterization of infections, potentially including novel pathogens, enabling better patient outcomes. Recovering pathogen genomes provides a vast amount of clinically useful information, such as whether a patient's *E. coli* is susceptible to ceftriaxone, whether a patient's *V. cholerae* is toxigenic, or whether the *M. tuberculosis* between two patients are likely to be epidemiologically linked.
 
 
 ## Quick start
@@ -25,7 +25,8 @@ nextflow main.nf --fastq in.fq --outdir output_dir
 A nanopore basecalled fastq. Can be any library version (R7-10). Can be barcoded or not. Can be amplicon data (eg. 16S/ITS), isolate data (eg. a colony of *Staphylococcus aureus*), or clinical metagenomic data (eg. the sputum of a patient).
 
 ## Output
-An interactive html file and a static pdf summary file.
+An interactive html file and a static pdf summary file. These files will show a taxonomic classification of the percentage makeup of organisms in each patient sample. This could include viral, bacterial, fungal and protozoal organisms. For each of these organisms, the presence of antimicrobial resistance genes will be visualized, along with the predicted phenotype for the antimicrobial drug associated with these genes. 
+
 Example [here](https://en.wikipedia.org/wiki/Special:Random)
 
 ## All options
