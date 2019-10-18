@@ -48,14 +48,17 @@ options:
   --skipQC
   --skipTyping
   --skipAMR
+  --meanQ [7] Reads with mean quality below this value will be filtered from analysis
+  --minLength [250] Reads with length below this threshold will be filtered from analysis
 ```
 
 ## Pipeline overview
 1. User inputs basecalled nanopore fastq reads
 2. BugSeq validates the fastq file (fqtools) and determines if it's truly nanopore data
 3. Next, the fastq undergoes quality assessment with FastQC and results combined with multiqc
-4. Reads are adapter trimmed and demultiplexed (poretools)
-5. Trimmed and demultiplexed reads undergo experiment type detection to determine if this is amplicon data (eg. 16S/ITS), cultured isolate data or metagenomic data (magic..., including sourmash)
+4. Reads are adapter trimmed and demultiplexed (qcat)
+5. Reads are quality and length filtered
+6. Trimmed and demultiplexed reads undergo experiment type detection to determine if this is amplicon data (eg. 16S/ITS), cultured isolate data or metagenomic data (magic..., including sourmash)
 
 ### Isolate data
 1. Genome assembly (Flye)
