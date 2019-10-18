@@ -35,21 +35,21 @@ usage: nextflow main.nf --fastq 'in.fq' --outdir 'out_dir' [options...]
 options:
   # Input options
   --fastq
-  --control
+  --control_fastq            Control sample fastqs for complex subtraction from cases. Can use regex patterns or specify multiple file separated by commas.
   
   # Output options
   --outdir
   
   # Pipeline options
-  --isolate
-  --metagenome
-  --16S
-  --ITS
-  --skipQC
-  --skipTyping
-  --skipAMR
-  --meanQ [7] Reads with mean quality below this value will be filtered from analysis
-  --minLength [250] Reads with length below this threshold will be filtered from analysis
+  --isolate                 Input file(s) are from isolate sequencing
+  --metagenome              Input file(s) are metagenomic samples
+  --16S                     Input file(s) are 16S amplicon sequencing data
+  --ITS                     Input file(s) are ITS amplicon sequencing data
+  --skipQC                  Skip quality assessment and read trimming
+  --skipTyping              Skip public health typing analysis
+  --skipAMR                 Skip AMR prediction step
+  --meanQ [7]               Reads with mean quality below this value will be filtered from analysis
+  --minLength [250]         Reads with length below this threshold will be filtered from analysis
 ```
 
 ## Pipeline overview
