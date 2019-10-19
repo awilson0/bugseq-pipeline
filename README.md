@@ -43,10 +43,10 @@ options:
   --outdir
   
   # Pipeline options
-  --isolate                 Input file(s) are from isolate sequencing
-  --metagenome              Input file(s) are metagenomic samples
-  --16S                     Input file(s) are 16S amplicon sequencing data
-  --ITS                     Input file(s) are ITS amplicon sequencing data
+  --isolate                 Input file(s) are from isolate sequencing [default: automatic detection]
+  --metagenome              Input file(s) are metagenomic samples [default: automatic detection]
+  --16S                     Input file(s) are 16S amplicon sequencing data [default: automatic detection]
+  --ITS                     Input file(s) are ITS amplicon sequencing data [default: automatic detection]
   --skipQC                  Skip quality assessment and read trimming
   --skipTyping              Skip public health typing analysis
   --skipAMR                 Skip AMR prediction step
