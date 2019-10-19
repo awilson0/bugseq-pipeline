@@ -1,0 +1,106 @@
+---
+title: "bugseq_report"
+author: "Heather"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    df_print: paged
+    theme: united
+    highlight: tango
+    css: null #styles.css
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages( library(tidyverse))
+suppressPackageStartupMessages( library(ggplot2))
+
+```
+```{r}
+# prepare ops data
+#source("src/extract_performance.R")
+#performance <- extract_performance()
+```
+
+```{r, echo=FALSE}
+#make fake sample
+sample1 <- tibble("s. Typh." = 50, "E. coli" = 40, "S. aureus" = 10, "c. bact" = 0)
+sample2 <- tibble("s. Typh." = 30, "E. coli" = 30, "S. aureus" = 40, "c. bact" = 30)
+sample1 <- t(sample1)
+sample2 <- t(sample2)
+colnames(sample1)[1] <- "GCF_001931595.1_ASM193159v1_genomic"
+colnames(sample2)[1] <- "GCF_001931596.1_ASM193159v1_genomic"
+
+output1 <- cbind(sample1, sample2)
+output1
+library(knitr)
+#kable(output1, "latex", booktabs = TRUE, longtable = TRUE, caption = "Test")
+
+```
+```{r}
+library(taxizedb)
+classification("9606")
+```
+```{r, }
+sample_species <- read_tsv("../../../../../pathoid-sam-report.tsv") #links to refseq database
+
+names(sample_species) <- sample_species[1,]
+sample_species <- sample_species[-1,] #not sure if i should delete the second row!?
+
+sample_species$`Final Best Hit Read Numbers` <- as.integer(sample_species$`Final Best Hit Read Numbers`)
+total_best_hit_read_numbers <- sum(as.integer(sample_species$`Final Best Hit Read Numbers`))
+sample_species <- sample_species %>%
+  select(Genome, `Final Best Hit Read Numbers`) %>%
+  mutate(percent_reads = as.integer(`Final Best Hit Read Numbers`)/total_best_hit_read_numbers) %>%
+  arrange(desc(percent_reads))
+head(sample_species)
+```
+
+```{r}
+ggplot(sample_species, aes(x=fct_reorder(Genome, percent_reads), y=percent_reads)) + geom_col() + coord_flip()
+```
+
+## Patient Sample Results {.tabset}
+
+### By Species
+
+(tab content)
+
+
+```{r}
+#for (i in nrow(sample_species)) {
+#  ggplot(i$ )
+  #cat(i)
+  #ggplot(i$)
+  #ggtitle(i)
+  
+  #for(gene in i) {
+    #cat(gene)
+    
+#  }
+#  }
+```
+
+### By Genes
+
+```{r}
+resfinder_df = read_tsv("resfinder.tsv")
+
+head(resfinder_df)
+```
+
+```{r}
+detailed_summary_df = read_tsv("detailed_summary.tsv")
+
+rmarkdown::paged_table(detailed_summary_df)
+```
+
+
+```{R}
+
+ggplot(detailed_summary_df, aes(x= `Predicted Phenotype`, y=`%Identity`)) + geom_col()
+```
